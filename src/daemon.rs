@@ -126,11 +126,11 @@ fn poll_once(
         return Ok(());
     }
 
-    let image_path = if content.image_data.is_some() {
+    let image_path = if let Some(ref image_data) = content.image_data {
         let filename = format!("{}.png", &content.hash[..16]);
         let full_path = paths.images_dir.join(&filename);
         save_image_to_file(
-            content.image_data.as_ref().unwrap(),
+            image_data,
             content.width.unwrap() as u32,
             content.height.unwrap() as u32,
             &full_path,
