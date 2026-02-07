@@ -9,6 +9,7 @@ A fast clipboard manager for macOS with history, search, tags, and a TUI.
 - Pin important clips, tag and organize them
 - Image clipboard support (PNG)
 - Interactive TUI browser
+- JSON output (`--json`) for scripting and AI agents
 - SQLite-backed storage
 
 ## Installation
@@ -64,6 +65,14 @@ cb clear [--days N]       Remove clips older than N days
 cb stats                  Show storage statistics
 cb tui                    Interactive TUI
 cb daemon start|stop|status   Manage the watcher daemon
+```
+
+Add `--json` (or `-j`) to any command for structured JSON output:
+
+```bash
+cb --json list --limit 5
+cb --json stats
+cb --json get 42
 ```
 
 ## License

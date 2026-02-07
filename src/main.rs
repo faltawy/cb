@@ -3,6 +3,7 @@ use std::process;
 use chrono::{Duration, Utc};
 use clap::{Parser, Subcommand};
 use rusqlite::Connection;
+use serde::Serialize;
 
 use cb::clipboard::{write_image_to_clipboard, write_text_to_clipboard};
 use cb::config::AppPaths;
@@ -14,6 +15,10 @@ use cb::storage::ClipStorage;
 #[derive(Parser)]
 #[command(name = "cb", version, about = "A clipboard manager for macOS")]
 struct Cli {
+    /// Output results as JSON
+    #[arg(short = 'j', long = "json", global = true)]
+    json: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -127,17 +132,31 @@ enum DaemonAction {
     Run,
 }
 
+#[derive(Serialize)]
+struct StatusResponse {
+    success: bool,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    removed: Option<i64>,
+}
+
 fn main() {
     let cli = Cli::parse();
+    let json = cli.json;
 
     if let Err(e) = run(cli) {
-        eprintln!("error: {}", e);
+        if json {
+            eprintln!("{}", serde_json::json!({"error": e.to_string()}));
+        } else {
+            eprintln!("error: {}", e);
+        }
         process::exit(1);
     }
 }
 
 fn run(cli: Cli) -> cb::errors::Result<()> {
     let paths = AppPaths::new();
+    let json = cli.json;
 
     match cli.command {
         None => cmd_list(
@@ -146,6 +165,7 @@ fn run(cli: Cli) -> cb::errors::Result<()> {
                 limit: 10,
                 ..Default::default()
             },
+            json,
         ),
         Some(Commands::List {
             limit,
@@ -164,18 +184,19 @@ fn run(cli: Cli) -> cb::errors::Result<()> {
                     limit,
                     offset,
                 },
+                json,
             )
         }
-        Some(Commands::Search { query, limit }) => cmd_search(&paths, &query, limit),
-        Some(Commands::Get { id }) => cmd_get(&paths, id),
-        Some(Commands::Copy { id }) => cmd_copy(&paths, id),
-        Some(Commands::Delete { id }) => cmd_delete(&paths, id),
-        Some(Commands::Pin { id, unpin }) => cmd_pin(&paths, id, !unpin),
-        Some(Commands::Tag { id, tag, remove }) => cmd_tag(&paths, id, &tag, remove),
-        Some(Commands::Clear { days }) => cmd_clear(&paths, days),
-        Some(Commands::Stats) => cmd_stats(&paths),
+        Some(Commands::Search { query, limit }) => cmd_search(&paths, &query, limit, json),
+        Some(Commands::Get { id }) => cmd_get(&paths, id, json),
+        Some(Commands::Copy { id }) => cmd_copy(&paths, id, json),
+        Some(Commands::Delete { id }) => cmd_delete(&paths, id, json),
+        Some(Commands::Pin { id, unpin }) => cmd_pin(&paths, id, !unpin, json),
+        Some(Commands::Tag { id, tag, remove }) => cmd_tag(&paths, id, &tag, remove, json),
+        Some(Commands::Clear { days }) => cmd_clear(&paths, days, json),
+        Some(Commands::Stats) => cmd_stats(&paths, json),
         Some(Commands::Tui) => cb::tui::run(&paths),
-        Some(Commands::Daemon { action }) => cmd_daemon(&paths, action),
+        Some(Commands::Daemon { action }) => cmd_daemon(&paths, action, json),
     }
 }
 
@@ -186,9 +207,14 @@ fn open_storage(paths: &AppPaths) -> cb::errors::Result<SqliteStorage> {
     SqliteStorage::new(conn)
 }
 
-fn cmd_list(paths: &AppPaths, filter: ClipFilter) -> cb::errors::Result<()> {
+fn cmd_list(paths: &AppPaths, filter: ClipFilter, json: bool) -> cb::errors::Result<()> {
     let storage = open_storage(paths)?;
     let clips = storage.list(filter)?;
+
+    if json {
+        println!("{}", serde_json::to_string(&clips).unwrap());
+        return Ok(());
+    }
 
     if clips.is_empty() {
         println!("No clips found.");
@@ -201,9 +227,14 @@ fn cmd_list(paths: &AppPaths, filter: ClipFilter) -> cb::errors::Result<()> {
     Ok(())
 }
 
-fn cmd_search(paths: &AppPaths, query: &str, limit: i64) -> cb::errors::Result<()> {
+fn cmd_search(paths: &AppPaths, query: &str, limit: i64, json: bool) -> cb::errors::Result<()> {
     let storage = open_storage(paths)?;
     let clips = storage.search(query, limit)?;
+
+    if json {
+        println!("{}", serde_json::to_string(&clips).unwrap());
+        return Ok(());
+    }
 
     if clips.is_empty() {
         println!("No results for \"{}\".", query);
@@ -216,86 +247,176 @@ fn cmd_search(paths: &AppPaths, query: &str, limit: i64) -> cb::errors::Result<(
     Ok(())
 }
 
-fn cmd_get(paths: &AppPaths, id: i64) -> cb::errors::Result<()> {
+fn cmd_get(paths: &AppPaths, id: i64, json: bool) -> cb::errors::Result<()> {
     let storage = open_storage(paths)?;
     let clip = storage.get_by_id(id)?;
+
+    if json {
+        println!("{}", serde_json::to_string(&clip).unwrap());
+        return Ok(());
+    }
+
     print_clip_detail(&clip);
     Ok(())
 }
 
-fn cmd_copy(paths: &AppPaths, id: i64) -> cb::errors::Result<()> {
+fn cmd_copy(paths: &AppPaths, id: i64, json: bool) -> cb::errors::Result<()> {
     let storage = open_storage(paths)?;
     let clip = storage.get_by_id(id)?;
 
-    match clip.content_type {
+    let message = match clip.content_type {
         ContentType::Text => {
             if let Some(ref text) = clip.text_content {
                 write_text_to_clipboard(text)?;
-                println!("Copied clip #{} to clipboard.", id);
+                format!("Copied clip #{} to clipboard.", id)
+            } else {
+                format!("Text clip #{} has no content.", id)
             }
         }
         ContentType::Image => {
             if let Some(ref path) = clip.image_path {
                 write_image_to_clipboard(std::path::Path::new(path))?;
-                println!("Copied image clip #{} to clipboard.", id);
+                format!("Copied image clip #{} to clipboard.", id)
             } else {
-                println!("Image clip #{} has no stored path.", id);
+                format!("Image clip #{} has no stored path.", id)
             }
         }
         ContentType::FileRef => {
-            println!("File reference: {}",
-                clip.text_content.as_deref().unwrap_or("unknown"));
+            format!(
+                "File reference: {}",
+                clip.text_content.as_deref().unwrap_or("unknown")
+            )
         }
-    }
+    };
 
     storage.touch(id)?;
-    Ok(())
-}
 
-fn cmd_delete(paths: &AppPaths, id: i64) -> cb::errors::Result<()> {
-    let storage = open_storage(paths)?;
-    if storage.delete(id)? {
-        println!("Deleted clip #{}.", id);
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&StatusResponse {
+                success: true,
+                message,
+                removed: None,
+            })
+            .unwrap()
+        );
     } else {
-        println!("Clip #{} not found.", id);
+        println!("{}", message);
     }
     Ok(())
 }
 
-fn cmd_pin(paths: &AppPaths, id: i64, pinned: bool) -> cb::errors::Result<()> {
+fn cmd_delete(paths: &AppPaths, id: i64, json: bool) -> cb::errors::Result<()> {
+    let storage = open_storage(paths)?;
+    let found = storage.delete(id)?;
+    let message = if found {
+        format!("Deleted clip #{}.", id)
+    } else {
+        format!("Clip #{} not found.", id)
+    };
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&StatusResponse {
+                success: found,
+                message,
+                removed: None,
+            })
+            .unwrap()
+        );
+    } else {
+        println!("{}", message);
+    }
+    Ok(())
+}
+
+fn cmd_pin(paths: &AppPaths, id: i64, pinned: bool, json: bool) -> cb::errors::Result<()> {
     let storage = open_storage(paths)?;
     storage.set_pinned(id, pinned)?;
-    if pinned {
-        println!("Pinned clip #{}.", id);
+    let message = if pinned {
+        format!("Pinned clip #{}.", id)
     } else {
-        println!("Unpinned clip #{}.", id);
+        format!("Unpinned clip #{}.", id)
+    };
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&StatusResponse {
+                success: true,
+                message,
+                removed: None,
+            })
+            .unwrap()
+        );
+    } else {
+        println!("{}", message);
     }
     Ok(())
 }
 
-fn cmd_tag(paths: &AppPaths, id: i64, tag: &str, remove: bool) -> cb::errors::Result<()> {
+fn cmd_tag(paths: &AppPaths, id: i64, tag: &str, remove: bool, json: bool) -> cb::errors::Result<()> {
     let storage = open_storage(paths)?;
-    if remove {
+    let message = if remove {
         storage.remove_tag(id, tag)?;
-        println!("Removed tag \"{}\" from clip #{}.", tag, id);
+        format!("Removed tag \"{}\" from clip #{}.", tag, id)
     } else {
         storage.add_tag(id, tag)?;
-        println!("Added tag \"{}\" to clip #{}.", tag, id);
+        format!("Added tag \"{}\" to clip #{}.", tag, id)
+    };
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&StatusResponse {
+                success: true,
+                message,
+                removed: None,
+            })
+            .unwrap()
+        );
+    } else {
+        println!("{}", message);
     }
     Ok(())
 }
 
-fn cmd_clear(paths: &AppPaths, days: i64) -> cb::errors::Result<()> {
+fn cmd_clear(paths: &AppPaths, days: i64, json: bool) -> cb::errors::Result<()> {
     let storage = open_storage(paths)?;
     let cutoff = Utc::now() - Duration::days(days);
     let removed = storage.clear_older_than(cutoff)?;
-    println!("Removed {} clip(s) older than {} days.", removed, days);
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&StatusResponse {
+                success: true,
+                message: format!("Removed {} clip(s) older than {} days.", removed, days),
+                removed: Some(removed),
+            })
+            .unwrap()
+        );
+    } else {
+        println!("Removed {} clip(s) older than {} days.", removed, days);
+    }
     Ok(())
 }
 
-fn cmd_stats(paths: &AppPaths) -> cb::errors::Result<()> {
+fn cmd_stats(paths: &AppPaths, json: bool) -> cb::errors::Result<()> {
     let storage = open_storage(paths)?;
     let stats = storage.stats()?;
+
+    if json {
+        let daemon_pid = daemon::daemon_status(paths).ok().flatten();
+        let mut obj = serde_json::to_value(&stats).unwrap();
+        let m = obj.as_object_mut().unwrap();
+        m.insert("daemon_running".into(), serde_json::json!(daemon_pid.is_some()));
+        m.insert("daemon_pid".into(), serde_json::json!(daemon_pid));
+        println!("{}", serde_json::to_string(&obj).unwrap());
+        return Ok(());
+    }
 
     println!("Clipboard Statistics");
     println!("────────────────────");
@@ -320,11 +441,24 @@ fn cmd_stats(paths: &AppPaths) -> cb::errors::Result<()> {
     Ok(())
 }
 
-fn cmd_daemon(paths: &AppPaths, action: DaemonAction) -> cb::errors::Result<()> {
+fn cmd_daemon(paths: &AppPaths, action: DaemonAction, json: bool) -> cb::errors::Result<()> {
     match action {
         DaemonAction::Start => {
             if let Ok(Some(pid)) = daemon::daemon_status(paths) {
-                println!("Daemon already running (pid {}).", pid);
+                let msg = format!("Daemon already running (pid {}).", pid);
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string(&StatusResponse {
+                            success: true,
+                            message: msg,
+                            removed: None,
+                        })
+                        .unwrap()
+                    );
+                } else {
+                    println!("{}", msg);
+                }
                 return Ok(());
             }
 
@@ -344,21 +478,59 @@ fn cmd_daemon(paths: &AppPaths, action: DaemonAction) -> cb::errors::Result<()> 
                 .spawn()
                 .map_err(|e| cb::errors::CbError::Daemon(e.to_string()))?;
 
-            println!("Started clipboard watcher (pid {}).", child.id());
+            let msg = format!("Started clipboard watcher (pid {}).", child.id());
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&StatusResponse {
+                        success: true,
+                        message: msg,
+                        removed: None,
+                    })
+                    .unwrap()
+                );
+            } else {
+                println!("{}", msg);
+            }
             Ok(())
         }
         DaemonAction::Stop => {
-            if daemon::stop_daemon(paths)? {
-                println!("Stopped clipboard watcher.");
+            let stopped = daemon::stop_daemon(paths)?;
+            let msg = if stopped {
+                "Stopped clipboard watcher."
             } else {
-                println!("Daemon is not running.");
+                "Daemon is not running."
+            };
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&StatusResponse {
+                        success: stopped,
+                        message: msg.into(),
+                        removed: None,
+                    })
+                    .unwrap()
+                );
+            } else {
+                println!("{}", msg);
             }
             Ok(())
         }
         DaemonAction::Status => {
-            match daemon::daemon_status(paths)? {
-                Some(pid) => println!("Daemon running (pid {}).", pid),
-                None => println!("Daemon is not running."),
+            if json {
+                let pid = daemon::daemon_status(paths)?;
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "running": pid.is_some(),
+                        "pid": pid,
+                    })
+                );
+            } else {
+                match daemon::daemon_status(paths)? {
+                    Some(pid) => println!("Daemon running (pid {}).", pid),
+                    None => println!("Daemon is not running."),
+                }
             }
             Ok(())
         }
