@@ -59,6 +59,20 @@ pub fn write_text_to_clipboard(text: &str) -> Result<()> {
     cb.set_text(text).map_err(|e| CbError::Clipboard(e.to_string()))
 }
 
+pub fn write_image_to_clipboard(path: &Path) -> Result<()> {
+    let img = image::open(path).map_err(|e| CbError::Image(e.to_string()))?;
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let mut cb = Clipboard::new().map_err(|e| CbError::Clipboard(e.to_string()))?;
+    let img_data = arboard::ImageData {
+        width: w as usize,
+        height: h as usize,
+        bytes: rgba.into_raw().into(),
+    };
+    cb.set_image(img_data)
+        .map_err(|e| CbError::Clipboard(e.to_string()))
+}
+
 pub fn save_image_to_file(data: &[u8], width: u32, height: u32, path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| CbError::Image(e.to_string()))?;

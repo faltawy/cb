@@ -1,1 +1,12 @@
 /target
+dist/
+*.tar.gz
+
+# macOS
+.DS_Store
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo

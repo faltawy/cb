@@ -4,3 +4,4 @@ pub mod daemon;
 pub mod errors;
 pub mod hash;
 pub mod storage;
+pub mod tui;

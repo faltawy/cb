@@ -4,7 +4,7 @@ use chrono::{Duration, Utc};
 use clap::{Parser, Subcommand};
 use rusqlite::Connection;
 
-use cb::clipboard::write_text_to_clipboard;
+use cb::clipboard::{write_image_to_clipboard, write_text_to_clipboard};
 use cb::config::AppPaths;
 use cb::daemon;
 use cb::storage::models::{ClipFilter, ContentType};
@@ -104,6 +104,9 @@ enum Commands {
     /// Show storage statistics
     Stats,
 
+    /// Interactive TUI
+    Tui,
+
     /// Manage the clipboard watcher daemon
     Daemon {
         #[command(subcommand)]
@@ -171,6 +174,7 @@ fn run(cli: Cli) -> cb::errors::Result<()> {
         Some(Commands::Tag { id, tag, remove }) => cmd_tag(&paths, id, &tag, remove),
         Some(Commands::Clear { days }) => cmd_clear(&paths, days),
         Some(Commands::Stats) => cmd_stats(&paths),
+        Some(Commands::Tui) => cb::tui::run(&paths),
         Some(Commands::Daemon { action }) => cmd_daemon(&paths, action),
     }
 }
@@ -231,8 +235,12 @@ fn cmd_copy(paths: &AppPaths, id: i64) -> cb::errors::Result<()> {
             }
         }
         ContentType::Image => {
-            println!("Image clips cannot be copied back yet. Path: {}",
-                clip.image_path.as_deref().unwrap_or("unknown"));
+            if let Some(ref path) = clip.image_path {
+                write_image_to_clipboard(std::path::Path::new(path))?;
+                println!("Copied image clip #{} to clipboard.", id);
+            } else {
+                println!("Image clip #{} has no stored path.", id);
+            }
         }
         ContentType::FileRef => {
             println!("File reference: {}",
